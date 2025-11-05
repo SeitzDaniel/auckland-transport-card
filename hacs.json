@@ -1,0 +1,8 @@
+{
+  "name": "Auckland Transport Card",
+  "filename": "auckland-transport-card.js",
+  "content_in_root": true,
+  "render_readme": true,
+  "homeassistant": "2025.1.0",
+  "hide_default_branch": false
+}
