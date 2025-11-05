@@ -43,4 +43,4 @@ All options for this card can be configured via the Lovelace UI editor.
 
 ## License
 
-MIT © [Denys Dovhan][denysdovhan]
+MIT © [Daniel Seitz](https://github.com/SeitzDaniel)
