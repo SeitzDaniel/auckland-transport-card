@@ -14,7 +14,7 @@ Please note this card will only work with the Auckland Transport Integration!
 
 1. [Install HACS](https://hacs.xyz/docs/use/download/download/), if you did not already
 2. [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=SeitzDaniel&repository=auckland-transport-card&category=lovelace)
-3. Install the Auckland Transport integration
+3. Install the Auckland Transport Card
 4. Restart Home Assistant.
 
 ### Manual
