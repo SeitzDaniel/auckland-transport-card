@@ -15,7 +15,7 @@
 
 /* global customElements, HTMLElement */
 
-const CARD_VERSION = 'v0.1.0';
+const CARD_VERSION = 'v0.1.1';
 
 class AucklandTransportCard extends HTMLElement {
   set hass(hass) {
@@ -253,7 +253,7 @@ class AucklandTransportCard extends HTMLElement {
     if (!departures.length) {
       const empty = document.createElement('div');
       empty.style.padding = '12px 0';
-      empty.textContent = stateObj ? (stateObj.state || 'No upcoming departures') : 'Entity not found';
+      empty.textContent = stateObj ? 'No upcoming departures' : 'Entity not found';
       wrapper.appendChild(empty);
       root.innerHTML = '';
       root.appendChild(wrapper);
@@ -353,11 +353,24 @@ class AucklandTransportCard extends HTMLElement {
       footer.appendChild(left);
     }
 
-    const remaining = attrs.remaining_departures_for_today;
-    if (this._config.show_footer_remaining && Number.isFinite(remaining)) {
+    // Show remaining departures count
+    if (this._config.show_footer_remaining) {
       const right = document.createElement('div');
-      right.textContent = `${remaining} Remaining departures for today`;
-      footer.appendChild(right);
+      // If headsign filter is active, count filtered departures
+      const filter = (this._config.headsign_filter || '').toString().trim();
+      if (filter) {
+        const filteredCount = departures.length;
+        right.textContent = `${filteredCount} Remaining departures for today`;
+      } else {
+        // Otherwise use the sensor attribute
+        const remaining = attrs.remaining_departures_for_today;
+        if (Number.isFinite(remaining)) {
+          right.textContent = `${remaining} Remaining departures for today`;
+        }
+      }
+      if (right.textContent) {
+        footer.appendChild(right);
+      }
     }
 
     // Show active headsign filter
