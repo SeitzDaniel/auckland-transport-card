@@ -479,7 +479,7 @@ class AucklandTransportCardEditor extends HTMLElement {
       entitySelect.value = config.entity || '';
     }
     
-    root.querySelectorAll('ha-textfield[configValue]').forEach((el) => {
+    root.querySelectorAll('ha-input[configValue]').forEach((el) => {
       const key = el.getAttribute('configValue');
       if (key === 'title') el.value = config.title || '';
       if (key === 'max_rows') el.value = config.max_rows || '';
@@ -534,7 +534,7 @@ class AucklandTransportCardEditor extends HTMLElement {
           margin-top: 8px;
           margin-bottom: 4px;
         }
-        ha-textfield, ha-select, ha-icon-picker, #entity-select {
+        ha-input, ha-select, ha-icon-picker, #entity-select {
           width: 100%;
         }
         ha-switch {
@@ -552,15 +552,15 @@ class AucklandTransportCardEditor extends HTMLElement {
             required
           >
           </ha-select>
-          <ha-textfield
+          <ha-input
             label="Title (optional)"
             configValue="title"
-          ></ha-textfield>
-          <ha-textfield
+          ></ha-input>
+          <ha-input
             label="Max rows (optional)"
             type="number"
             configValue="max_rows"
-          ></ha-textfield>
+          ></ha-input>
         </div>
 
         <div class="section">
@@ -572,12 +572,12 @@ class AucklandTransportCardEditor extends HTMLElement {
             ></ha-switch>
             <span>Show Logo</span>
           </div>
-          <ha-textfield
+          <ha-input
             label="Logo size (px)"
             type="number"
             configValue="header_logo_size"
             id="logo-size-field"
-          ></ha-textfield>
+          ></ha-input>
           <div style="display: flex; align-items: center; gap: 8px;">
             <ha-switch
               configValue="header_icon_show"
@@ -590,18 +590,18 @@ class AucklandTransportCardEditor extends HTMLElement {
             configValue="header_icon"
             id="icon-picker-field"
           ></ha-icon-picker>
-          <ha-textfield
+          <ha-input
             label="Icon size (px)"
             type="number"
             configValue="header_icon_size"
             id="icon-size-field"
-          ></ha-textfield>
-          <ha-textfield
+          ></ha-input>
+          <ha-input
             label="Icon color (optional)"
             configValue="header_icon_color"
             placeholder="e.g. var(--primary-color)"
             id="icon-color-field"
-          ></ha-textfield>
+          ></ha-input>
         </div>
 
         <div class="section">
@@ -638,12 +638,13 @@ class AucklandTransportCardEditor extends HTMLElement {
 
         <div class="section">
           <div class="section-title">Filter Options</div>
-          <ha-textfield
+          <ha-input
             label="Headsign filter (optional)"
             configValue="headsign_filter"
             placeholder="e.g. To Britomart"
-            helper="Filter trips by destination. You can use plain text"
-          ></ha-textfield>
+            helper="Filter trips by destination. You can use plain text."
+          >
+          </ha-input>
         </div>
 
         <div class="section">
@@ -679,7 +680,7 @@ class AucklandTransportCardEditor extends HTMLElement {
       entitySelect.addEventListener('closed', (e) => e.stopPropagation());
     }
 
-    root.querySelectorAll('ha-textfield[configValue]').forEach((el) => {
+    root.querySelectorAll('ha-input[configValue]').forEach((el) => {
       el.addEventListener('input', (ev) => {
         this._valueChanged(ev);
         // Update visibility when headsign_filter changes
