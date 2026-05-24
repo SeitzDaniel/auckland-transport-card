@@ -11,11 +11,12 @@
     - show_route (optional, default true)
     - show_headsign (optional, default true)
     - show_times (optional, default true)
+    - show_map (optional, default false)
 */
 
 /* global customElements, HTMLElement */
 
-const CARD_VERSION = 'v0.1.1';
+const CARD_VERSION = 'v0.2.0';
 
 class AucklandTransportCard extends HTMLElement {
   set hass(hass) {
@@ -48,7 +49,7 @@ class AucklandTransportCard extends HTMLElement {
     this._config = {
       title: undefined,
       max_rows: undefined,
-      headsign_filter: undefined,
+      filter: undefined,
       show_footer_api_break: false,
       show_footer_remaining: false,
       show_footer_filter: false,
@@ -64,6 +65,11 @@ class AucklandTransportCard extends HTMLElement {
       show_headsign: true,
       show_times: true,
       time_format: '24',  // '24' for 24-hour, '12' for 12-hour AM/PM
+      show_map: false,    // Show vehicle location map
+      map_zoom: 14,       // Default map zoom level
+      map_marker_type: 'icon',  // 'icon' or 'name' - determines what to show on map marker
+      map_marker_icon: undefined,  // Custom MDI icon for map marker (when map_marker_type is 'icon')
+      map_marker_name: undefined,  // Custom friendly name for map marker (when map_marker_type is 'name')
       ...config,
     };
     this._render();
@@ -79,15 +85,36 @@ class AucklandTransportCard extends HTMLElement {
     return this._hass.states[this._config.entity];
   }
 
+  _getVehicleLocationEntity() {
+    if (!this._hass || !this._config) return undefined;
+    // Find the vehicle location sensor based on the main entity
+    const mainEntity = this._config.entity;
+    if (!mainEntity) return undefined;
+    
+    // Replace the main sensor name with vehicle location sensor name
+    // e.g., sensor.auckland_transport_stop_name -> sensor.auckland_transport_stop_name_vehicle_location
+    const vehicleLocationEntity = mainEntity.replace(/^(sensor\.auckland_transport_[^_]+(?:_[^_]+)*)$/, '$1_vehicle_location');
+    
+    return this._hass.states[vehicleLocationEntity];
+  }
+
+  async _createMapCard(config, hass) {
+    await customElements.whenDefined('hui-map-card');
+    const mapCard = document.createElement('hui-map-card');
+    mapCard.setConfig(config);
+    mapCard.hass = hass;
+    return mapCard;
+  }
+
   _extractDepartures() {
     const stateObj = this._getEntityState();
     if (!stateObj) return [];
     const attrs = stateObj.attributes || {};
 
     let rows = [];
-    const maxRows = Number(this._config.max_rows) || 999;
+    // Read all available departures first (no limit yet)
     let index = 1;
-    while (index <= maxRows) {
+    while (true) {
       const prefix = `departure_${index}`;
       const sched = attrs[`${prefix}_scheduled_time`];
       const actual = attrs[`${prefix}_actual_time`];
@@ -105,37 +132,76 @@ class AucklandTransportCard extends HTMLElement {
         route: route || '',
         delaySeconds: Number.isFinite(delay) ? delay : (typeof delay === 'number' ? delay : undefined),
         licensePlate: license || undefined,
+        tripId: attrs[`${prefix}_trip_id`] || undefined,
       });
       index += 1;
     }
-    // Apply headsign filter if configured
-    const raw = (this._config.headsign_filter || '').toString().trim();
-    if (raw) {
-      let include = true;
-      let pattern = raw;
-      if (pattern.startsWith('!')) {
-        include = false;
-        pattern = pattern.slice(1);
-      }
-      let tester = (h) => true;
-      if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
-        const last = pattern.lastIndexOf('/');
-        const body = pattern.slice(1, last);
-        const flags = pattern.slice(last + 1) || 'i';
-        try {
-          const re = new RegExp(body, flags);
-          tester = (h) => re.test(h || '');
-        } catch (e) {
-          const needle = pattern.toLowerCase();
-          tester = (h) => (h || '').toLowerCase().includes(needle);
-        }
-      } else {
-        const needle = pattern.toLowerCase();
-        tester = (h) => (h || '').toLowerCase().includes(needle);
-      }
-      rows = rows.filter((r) => (include ? tester(r.headsign) : !tester(r.headsign)));
+    // Apply filter if configured (checks both route and headsign)
+    const filterRaw = (this._config.filter || '').toString().trim();
+    if (filterRaw) {
+      rows = this._applyFilter(rows, filterRaw);
+    }
+    // Apply max_rows limit after filtering
+    const maxRows = Number(this._config.max_rows);
+    if (maxRows && maxRows > 0) {
+      rows = rows.slice(0, maxRows);
     }
     return rows;
+  }
+
+  _applyFilter(rows, filterString) {
+    // Split by semicolon to support multiple filters (OR logic)
+    const patterns = filterString.split(';').map(p => p.trim()).filter(p => p);
+    
+    if (patterns.length === 0) return rows;
+    
+    // For each pattern, determine if it's include or exclude
+    const filters = patterns.map(pattern => {
+      let include = true;
+      let patternStr = pattern;
+      if (patternStr.startsWith('!')) {
+        include = false;
+        patternStr = patternStr.slice(1);
+      }
+      
+      let tester = (value) => true;
+      // Check if it's a regex pattern
+      if (patternStr.startsWith('/') && patternStr.lastIndexOf('/') > 0) {
+        const last = patternStr.lastIndexOf('/');
+        const body = patternStr.slice(1, last);
+        const flags = patternStr.slice(last + 1) || 'i';
+        try {
+          const re = new RegExp(body, flags);
+          tester = (value) => re.test(value || '');
+        } catch (e) {
+          // Fallback to plain text if regex fails
+          const needle = patternStr.toLowerCase();
+          tester = (value) => (value || '').toLowerCase().includes(needle);
+        }
+      } else {
+        // Plain text matching (case-insensitive)
+        const needle = patternStr.toLowerCase();
+        tester = (value) => (value || '').toLowerCase().includes(needle);
+      }
+      
+      return { include, tester };
+    });
+    
+    // Apply filters: check both route and headsign fields
+    return rows.filter((row) => {
+      const includeFilters = filters.filter(f => f.include);
+      const excludeFilters = filters.filter(f => !f.include);
+      
+      // If there are include filters, at least one must match (in either route or headsign)
+      const includeMatch = includeFilters.length === 0 || 
+        includeFilters.some(f => f.tester(row.route) || f.tester(row.headsign));
+      
+      // If there are exclude filters, none should match (in either route or headsign)
+      const excludeMatch = excludeFilters.length === 0 || 
+        !excludeFilters.some(f => f.tester(row.route) || f.tester(row.headsign));
+      
+      return includeMatch && excludeMatch;
+    });
   }
 
   _formatDelay(seconds) {
@@ -248,7 +314,150 @@ class AucklandTransportCard extends HTMLElement {
     }
     wrapper.appendChild(headerRow);
 
+    // Get departures first
     const departures = this._extractDepartures();
+
+    // Map display (shown when show_map is enabled in config)
+    if (this._config.show_map) {
+      const stateObj = this._getEntityState();
+      const vehicleLocationState = this._getVehicleLocationEntity();
+      
+      if (stateObj && departures.length > 0) {
+        // Get the trip_id from the first departure in the filtered table
+        const firstDepartureTripId = departures[0].tripId;
+        
+        const mapContainer = document.createElement('div');
+        mapContainer.style.marginBottom = '16px';
+        mapContainer.style.borderRadius = '8px';
+        mapContainer.style.overflow = 'hidden';
+        mapContainer.style.border = '1px solid var(--divider-color)';
+        
+        // Determine what to show on the map
+        let mapEntities = [];
+        let infoText = '';
+        let showVehicle = false;
+        
+        if (vehicleLocationState && firstDepartureTripId) {
+          const vehicleTripId = vehicleLocationState.attributes.trip_id;
+          const latitude = vehicleLocationState.attributes.latitude;
+          const longitude = vehicleLocationState.attributes.longitude;
+          
+          if (vehicleTripId === firstDepartureTripId && latitude && longitude) {
+            // Trip IDs match and GPS available - show vehicle
+            mapEntities = [vehicleLocationState.entity_id];
+            showVehicle = true;
+            
+            const routeId = departures[0].route || '';
+            const headsign = departures[0].headsign || '';
+            const licensePlate = vehicleLocationState.attributes.license_plate || '';
+            
+            infoText = `📍 Route: ${routeId}`;
+            if (headsign) infoText += ` | Destination: ${headsign}`;
+            if (licensePlate) infoText += ` | Vehicle: ${licensePlate}`;
+          } else if (!latitude || !longitude) {
+            // GPS coordinates not available
+            const routeId = departures[0].route || '';
+            const headsign = departures[0].headsign || '';
+            infoText = `⚠️ GPS coordinates not available for Route ${routeId}`;
+            if (headsign) infoText += ` to ${headsign}`;
+          } else {
+            // Trip IDs don't match
+            const routeId = departures[0].route || '';
+            const headsign = departures[0].headsign || '';
+            infoText = `⚠️ Vehicle location tracking different trip. Showing Route ${routeId}`;
+            if (headsign) infoText += ` to ${headsign}`;
+            infoText += ` (not currently tracked)`;
+          }
+        } else {
+          // Vehicle location sensor not available
+          const routeId = departures[0].route || '';
+          const headsign = departures[0].headsign || '';
+          infoText = `⚠️ Vehicle tracking unavailable for Route ${routeId}`;
+          if (headsign) infoText += ` to ${headsign}`;
+        }
+        
+        // Add stop location to map if we're not showing vehicle
+        if (!showVehicle && stateObj.attributes.stop_lat && stateObj.attributes.stop_lon) {
+          // Show the stop location instead
+          mapEntities = [this._config.entity];
+        }
+        
+        // Configure the map card
+        const mapConfig = {
+          type: 'map',
+          entities: mapEntities.map(entityId => {
+            // Apply marker customization based on map_marker_type
+            if (this._config.map_marker_type === 'name') {
+              // Use name/label for marker
+              const entityConfig = { 
+                entity: entityId,
+                label_mode: 'name'
+              };
+              // Override with custom friendly name if provided
+              if (this._config.map_marker_name) {
+                entityConfig.name = this._config.map_marker_name;
+              }
+              return entityConfig;
+            } else {
+              // Icon mode - show the entity's icon on the marker
+              const entityConfig = {
+                entity: entityId,
+                label_mode: 'icon'
+              };
+              return entityConfig;
+            }
+          }),
+          default_zoom: this._config.map_zoom || 14,
+          aspect_ratio: '16:9',
+          dark_mode: false,
+        };
+        
+        // Override entity icon if custom icon is specified
+        // This needs to be done by modifying the hass object temporarily
+        let modifiedHass = this._hass;
+        if (this._config.map_marker_icon && this._config.map_marker_type !== 'name' && mapEntities.length > 0) {
+          // Create a shallow copy of hass with modified entity states
+          modifiedHass = {
+            ...this._hass,
+            states: {
+              ...this._hass.states
+            }
+          };
+          
+          // Override the icon for each entity in the map
+          mapEntities.forEach(entityId => {
+            if (modifiedHass.states[entityId]) {
+              modifiedHass.states[entityId] = {
+                ...modifiedHass.states[entityId],
+                attributes: {
+                  ...modifiedHass.states[entityId].attributes,
+                  icon: this._config.map_marker_icon
+                }
+              };
+            }
+          });
+        }
+        
+        // Create map card asynchronously
+        this._createMapCard(mapConfig, modifiedHass).then(mapCard => {
+          mapContainer.appendChild(mapCard);
+        }).catch(() => {
+          // Silently fail if map can't be created
+        });
+        
+        // Add info bar below map
+        const vehicleInfo = document.createElement('div');
+        vehicleInfo.style.padding = '8px 12px';
+        vehicleInfo.style.backgroundColor = 'var(--secondary-background-color)';
+        vehicleInfo.style.fontSize = '12px';
+        vehicleInfo.style.color = showVehicle ? 'var(--secondary-text-color)' : 'var(--warning-color, orange)';
+        vehicleInfo.textContent = infoText;
+        mapContainer.appendChild(vehicleInfo);
+        
+        wrapper.appendChild(mapContainer);
+      }
+    }
+
 
     if (!departures.length) {
       const empty = document.createElement('div');
@@ -356,8 +565,8 @@ class AucklandTransportCard extends HTMLElement {
     // Show remaining departures count
     if (this._config.show_footer_remaining) {
       const right = document.createElement('div');
-      // If headsign filter is active, count filtered departures
-      const filter = (this._config.headsign_filter || '').toString().trim();
+      // If filter is active, count filtered departures
+      const filter = (this._config.filter || '').toString().trim();
       if (filter) {
         const filteredCount = departures.length;
         right.textContent = `${filteredCount} Remaining departures for today`;
@@ -373,8 +582,8 @@ class AucklandTransportCard extends HTMLElement {
       }
     }
 
-    // Show active headsign filter
-    const filter = (this._config.headsign_filter || '').toString().trim();
+    // Show active filter
+    const filter = (this._config.filter || '').toString().trim();
     if (this._config.show_footer_filter && filter) {
       const f = document.createElement('div');
       f.style.marginLeft = 'auto';
@@ -419,9 +628,51 @@ class AucklandTransportCardEditor extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    const entityPicker = this.shadowRoot?.querySelector('ha-entity-picker');
-    if (entityPicker) {
-      entityPicker.hass = hass;
+    // Repopulate entity picker when hass updates
+    if (this.shadowRoot) {
+      this._setupEntityPicker();
+    }
+  }
+
+  _setupEntityPicker() {
+    if (!this.shadowRoot) return;
+    
+    const entityPicker = this.shadowRoot.getElementById('entity-picker');
+    if (!entityPicker) return;
+    
+    // Populate the select with filtered entities
+    if (this._hass) {
+      const sensorEntities = Object.keys(this._hass.states)
+        .filter((id) => id.startsWith('sensor.auckland_transport') && !id.includes('_vehicle_location'))
+        .sort();
+      
+      // Clear existing options except the first one
+      entityPicker.innerHTML = '<option value="">Select an entity...</option>';
+      
+      // Add entity options
+      sensorEntities.forEach((entityId) => {
+        const option = document.createElement('option');
+        option.value = entityId;
+        option.textContent = entityId;
+        entityPicker.appendChild(option);
+      });
+    }
+    
+    // Set initial value
+    if (this._config?.entity) {
+      entityPicker.value = this._config.entity;
+    }
+    
+    // Add event listener (only once)
+    if (!entityPicker._listenerAdded) {
+      entityPicker.addEventListener('change', (ev) => {
+        ev.stopPropagation();
+        const value = ev.target.value;
+        if (value) {
+          this._updateConfig('entity', value);
+        }
+      });
+      entityPicker._listenerAdded = true;
     }
   }
 
@@ -459,10 +710,36 @@ class AucklandTransportCardEditor extends HTMLElement {
       iconColorField.style.display = config.header_icon_show !== false ? 'block' : 'none';
     }
     
-    // Show/hide filter indicator based on whether headsign_filter has a value
+    // Show/hide map zoom based on show_map switch
+    const mapZoomField = root.getElementById('map-zoom-field');
+    if (mapZoomField) {
+      mapZoomField.style.display = config.show_map === true ? 'block' : 'none';
+    }
+    
+    // Show/hide map marker type select based on show_map switch
+    const mapMarkerTypeField = root.getElementById('map-marker-type-field');
+    if (mapMarkerTypeField) {
+      mapMarkerTypeField.style.display = config.show_map === true ? 'block' : 'none';
+    }
+    
+    // Show/hide map marker icon based on show_map and marker type
+    const mapMarkerIconField = root.getElementById('map-marker-icon-field');
+    if (mapMarkerIconField) {
+      const showIcon = config.show_map === true && (config.map_marker_type === 'icon' || !config.map_marker_type);
+      mapMarkerIconField.style.display = showIcon ? 'block' : 'none';
+    }
+    
+    // Show/hide map marker name based on show_map and marker type
+    const mapMarkerNameField = root.getElementById('map-marker-name-field');
+    if (mapMarkerNameField) {
+      const showName = config.show_map === true && config.map_marker_type === 'name';
+      mapMarkerNameField.style.display = showName ? 'block' : 'none';
+    }
+    
+    // Show/hide filter indicator based on whether filter has a value
     const filterIndicatorField = root.getElementById('filter-indicator-field');
     if (filterIndicatorField) {
-      const hasFilter = config.headsign_filter && config.headsign_filter.toString().trim() !== '';
+      const hasFilter = config.filter && config.filter.toString().trim() !== '';
       filterIndicatorField.style.display = hasFilter ? 'block' : 'none';
     }
   }
@@ -473,11 +750,8 @@ class AucklandTransportCardEditor extends HTMLElement {
     const config = this._config;
     const root = this.shadowRoot;
     
-    // Update entity select value
-    const entitySelect = root.getElementById('entity-select');
-    if (entitySelect) {
-      entitySelect.value = config.entity || '';
-    }
+    // Setup and update entity picker
+    this._setupEntityPicker();
     
     root.querySelectorAll('ha-input[configValue]').forEach((el) => {
       const key = el.getAttribute('configValue');
@@ -486,7 +760,9 @@ class AucklandTransportCardEditor extends HTMLElement {
       if (key === 'header_logo_size') el.value = config.header_logo_size || 40;
       if (key === 'header_icon_size') el.value = config.header_icon_size || 28;
       if (key === 'header_icon_color') el.value = config.header_icon_color || '';
-      if (key === 'headsign_filter') el.value = config.headsign_filter || '';
+      if (key === 'filter') el.value = config.filter || '';
+      if (key === 'map_zoom') el.value = config.map_zoom || 14;
+      if (key === 'map_marker_name') el.value = config.map_marker_name || '';
     });
 
     root.querySelectorAll('ha-switch[configValue]').forEach((el) => {
@@ -499,6 +775,7 @@ class AucklandTransportCardEditor extends HTMLElement {
       if (key === 'time_format_24h') el.checked = config.time_format !== '12';
       if (key === 'show_delay') el.checked = config.show_delay !== false;
       if (key === 'show_license_plate') el.checked = config.show_license_plate === true;
+      if (key === 'show_map') el.checked = config.show_map === true;
       if (key === 'show_footer_api_break') el.checked = config.show_footer_api_break === true;
       if (key === 'show_footer_remaining') el.checked = config.show_footer_remaining === true;
       if (key === 'show_footer_filter') el.checked = config.show_footer_filter === true;
@@ -507,6 +784,17 @@ class AucklandTransportCardEditor extends HTMLElement {
     const iconPicker = root.querySelector('ha-icon-picker[configValue="header_icon"]');
     if (iconPicker) {
       iconPicker.value = config.header_icon || '';
+    }
+    
+    const mapMarkerIconPicker = root.querySelector('ha-icon-picker[configValue="map_marker_icon"]');
+    if (mapMarkerIconPicker) {
+      mapMarkerIconPicker.value = config.map_marker_icon || '';
+    }
+    
+    // Update map marker type select
+    const mapMarkerTypeSelect = root.getElementById('map-marker-type-select');
+    if (mapMarkerTypeSelect) {
+      mapMarkerTypeSelect.value = config.map_marker_type || 'icon';
     }
     
     // Update visibility of conditional fields
@@ -534,8 +822,18 @@ class AucklandTransportCardEditor extends HTMLElement {
           margin-top: 8px;
           margin-bottom: 4px;
         }
-        ha-input, ha-select, ha-icon-picker, #entity-select {
+        ha-input, ha-select, ha-icon-picker {
           width: 100%;
+        }
+        select {
+          font-family: inherit;
+          font-size: 14px;
+        }
+        label {
+          display: block;
+          margin-bottom: 4px;
+          font-size: 12px;
+          color: var(--secondary-text-color);
         }
         ha-switch {
           padding: 8px 0;
@@ -543,15 +841,10 @@ class AucklandTransportCardEditor extends HTMLElement {
       </style>
       <div class="card-config">
         <div class="section">
-          <ha-select
-            id="entity-select"
-            label="Entity (required)"
-            configValue="entity"
-            fixedMenuPosition
-            naturalMenuWidth
-            required
-          >
-          </ha-select>
+          <label>Entity (required)</label>
+          <select id="entity-picker" style="width: 100%; padding: 8px; border: 1px solid var(--divider-color); border-radius: 4px; background: var(--card-background-color); color: var(--primary-text-color);">
+            <option value="">Select an entity...</option>
+          </select>
           <ha-input
             label="Title (optional)"
             configValue="title"
@@ -639,12 +932,48 @@ class AucklandTransportCardEditor extends HTMLElement {
         <div class="section">
           <div class="section-title">Filter Options</div>
           <ha-input
-            label="Headsign filter (optional)"
-            configValue="headsign_filter"
-            placeholder="e.g. To Britomart"
-            helper="Filter trips by destination. You can use plain text."
+            label="Filter (optional)"
+            configValue="filter"
+            placeholder="e.g. 70; 30; To Britomart"
+            helper="Filter trips by route or destination. Use semicolon (;) to separate multiple values."
           >
           </ha-input>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Map Options</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <ha-switch configValue="show_map" id="show-map-switch"></ha-switch>
+            <span>Show Vehicle Location Map</span>
+          </div>
+          <ha-input
+            label="Map zoom level"
+            type="number"
+            configValue="map_zoom"
+            min="1"
+            max="20"
+            id="map-zoom-field"
+            helper="Zoom level for the map (1-20, default: 14)"
+          ></ha-input>
+          <div id="map-marker-type-field">
+            <label>Map marker display</label>
+            <select id="map-marker-type-select" style="width: 100%; padding: 8px; border: 1px solid var(--divider-color); border-radius: 4px; background: var(--card-background-color); color: var(--primary-text-color);">
+              <option value="icon">Icon</option>
+              <option value="name">Name</option>
+            </select>
+          </div>
+          <ha-icon-picker
+            label="Map marker icon (optional)"
+            configValue="map_marker_icon"
+            id="map-marker-icon-field"
+          ></ha-icon-picker>
+          <ha-input
+            label="Map marker name (optional)"
+            configValue="map_marker_name"
+            id="map-marker-name-field"
+            placeholder="e.g. Bus, Train"
+            helper="Custom friendly name for map marker"
+          ></ha-input>
         </div>
 
         <div class="section">
@@ -665,26 +994,18 @@ class AucklandTransportCardEditor extends HTMLElement {
       </div>
     `;
 
-    // Populate entity select with Auckland Transport sensor entities
-    const entitySelect = root.getElementById('entity-select');
-    if (entitySelect && this._hass) {
-      const sensorEntities = Object.keys(this._hass.states).filter((id) => id.startsWith('sensor.auckland_transport'));
-      entitySelect.innerHTML = sensorEntities.map((entity) => 
-        `<mwc-list-item value="${entity}">${entity}</mwc-list-item>`
-      ).join('');
-      entitySelect.value = this._config.entity || '';
-      entitySelect.addEventListener('selected', (ev) => {
-        ev.stopPropagation();
-        this._updateConfig('entity', ev.target.value);
-      });
-      entitySelect.addEventListener('closed', (e) => e.stopPropagation());
-    }
+    // Configure entity picker with Auckland Transport sensor filtering
+    // Use setTimeout to ensure the element is fully initialized
+    setTimeout(() => {
+      this._setupEntityPicker();
+    }, 0);
 
     root.querySelectorAll('ha-input[configValue]').forEach((el) => {
       el.addEventListener('input', (ev) => {
         this._valueChanged(ev);
-        // Update visibility when headsign_filter changes
-        if (el.getAttribute('configValue') === 'headsign_filter') {
+        // Update visibility when filter changes
+        const configValue = el.getAttribute('configValue');
+        if (configValue === 'filter') {
           this._updateVisibility();
         }
       });
@@ -703,6 +1024,25 @@ class AucklandTransportCardEditor extends HTMLElement {
         ev.target.configValue = 'header_icon';
         this._valueChanged(ev);
       });
+    }
+    
+    const mapMarkerIconPicker = root.querySelector('ha-icon-picker[configValue="map_marker_icon"]');
+    if (mapMarkerIconPicker) {
+      mapMarkerIconPicker.addEventListener('value-changed', (ev) => {
+        ev.target.configValue = 'map_marker_icon';
+        this._valueChanged(ev);
+      });
+    }
+    
+    const mapMarkerTypeSelect = root.getElementById('map-marker-type-select');
+    if (mapMarkerTypeSelect && !mapMarkerTypeSelect._listenerAdded) {
+      mapMarkerTypeSelect.addEventListener('change', (ev) => {
+        ev.stopPropagation();
+        const value = ev.target.value;
+        this._updateConfig('map_marker_type', value);
+        this._updateVisibility();
+      });
+      mapMarkerTypeSelect._listenerAdded = true;
     }
   }
 
