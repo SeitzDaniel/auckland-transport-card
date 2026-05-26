@@ -16,7 +16,7 @@
 
 /* global customElements, HTMLElement */
 
-const CARD_VERSION = 'v0.2.0';
+const CARD_VERSION = 'v0.2.1';
 
 class AucklandTransportCard extends HTMLElement {
   set hass(hass) {
@@ -106,7 +106,7 @@ class AucklandTransportCard extends HTMLElement {
     return mapCard;
   }
 
-  _extractDepartures() {
+  _extractDepartures(applyMaxRows = true) {
     const stateObj = this._getEntityState();
     if (!stateObj) return [];
     const attrs = stateObj.attributes || {};
@@ -141,10 +141,12 @@ class AucklandTransportCard extends HTMLElement {
     if (filterRaw) {
       rows = this._applyFilter(rows, filterRaw);
     }
-    // Apply max_rows limit after filtering
-    const maxRows = Number(this._config.max_rows);
-    if (maxRows && maxRows > 0) {
-      rows = rows.slice(0, maxRows);
+    // Apply max_rows limit after filtering (only if requested)
+    if (applyMaxRows) {
+      const maxRows = Number(this._config.max_rows);
+      if (maxRows && maxRows > 0) {
+        rows = rows.slice(0, maxRows);
+      }
     }
     return rows;
   }
@@ -565,11 +567,11 @@ class AucklandTransportCard extends HTMLElement {
     // Show remaining departures count
     if (this._config.show_footer_remaining) {
       const right = document.createElement('div');
-      // If filter is active, count filtered departures
+      // If filter is active, count filtered departures (without max_rows limit)
       const filter = (this._config.filter || '').toString().trim();
       if (filter) {
-        const filteredCount = departures.length;
-        right.textContent = `${filteredCount} Remaining departures for today`;
+        const totalFilteredCount = this._extractDepartures(false).length;
+        right.textContent = `${totalFilteredCount} Remaining departures for today`;
       } else {
         // Otherwise use the sensor attribute
         const remaining = attrs.remaining_departures_for_today;
