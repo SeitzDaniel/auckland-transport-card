@@ -8,6 +8,11 @@
     - max_rows (optional): override number of rows (defaults to attributes available)
     - show_delay (optional, default true)
     - show_license_plate (optional, default false)
+    - show_direction (optional, default false): show an arriving/departing icon per row
+    - arriving_icon (optional, default 'mdi:location-enter')
+    - departing_icon (optional, default 'mdi:location-exit')
+    - arriving_color (optional): CSS color for arriving icon (default green)
+    - departing_color (optional): CSS color for departing icon (default blue)
     - show_route (optional, default true)
     - show_headsign (optional, default true)
     - show_times (optional, default true)
@@ -16,7 +21,7 @@
 
 /* global customElements, HTMLElement */
 
-const CARD_VERSION = 'v0.2.1';
+const CARD_VERSION = 'v0.3.1';
 
 class AucklandTransportCard extends HTMLElement {
   set hass(hass) {
@@ -61,6 +66,11 @@ class AucklandTransportCard extends HTMLElement {
       header_logo_size: 40,              
       show_delay: true,
       show_license_plate: false,
+      show_direction: false,                 // show arriving/departing icon column
+      arriving_icon: 'mdi:location-enter',   // icon for trips terminating at this stop
+      departing_icon: 'mdi:location-exit',   // icon for trips originating/continuing
+      arriving_color: undefined,             // override arriving icon color (CSS color or var)
+      departing_color: undefined,            // override departing icon color (CSS color or var)
       show_route: true,
       show_headsign: true,
       show_times: true,
@@ -122,6 +132,7 @@ class AucklandTransportCard extends HTMLElement {
       const route = attrs[`${prefix}_route`];
       const delay = attrs[`${prefix}_delay_in_seconds`];
       const license = attrs[`${prefix}_license_plate`];
+      const pickupType = attrs[`${prefix}_pickup_type`];
 
       if (!sched && !actual && !headsign && !route) break;
 
@@ -133,6 +144,7 @@ class AucklandTransportCard extends HTMLElement {
         delaySeconds: Number.isFinite(delay) ? delay : (typeof delay === 'number' ? delay : undefined),
         licensePlate: license || undefined,
         tripId: attrs[`${prefix}_trip_id`] || undefined,
+        direction: this._computeDirection(pickupType, headsign, attrs.stop_name || attrs.stop || ''),
       });
       index += 1;
     }
@@ -204,6 +216,43 @@ class AucklandTransportCard extends HTMLElement {
       
       return includeMatch && excludeMatch;
     });
+  }
+
+  _computeDirection(pickupType, headsign, stopName) {
+    // 1. Authoritative GTFS signal, if the integration exposes pickup_type.
+    //    pickup_type === 1 means "no boarding here" -> the service terminates
+    //    at this stop -> it is arriving. Anything else is boardable -> departing.
+    if (pickupType === 1 || pickupType === '1') return 'arriving';
+    if (pickupType === 0 || pickupType === '0') return 'departing';
+
+    // 2. Fallback heuristic for integrations that don't yet expose pickup_type:
+    //    a trip whose final destination is THIS stop is terminating here.
+    const dest = this._headsignDestination(headsign);
+    const core = this._stopCoreName(stopName);
+    if (!dest || !core) return undefined; // can't tell -> render no icon
+    return dest.toLowerCase().includes(core.toLowerCase()) ? 'arriving' : 'departing';
+  }
+
+  _headsignDestination(headsign) {
+    // Headsigns look like "Pukekohe 1 To Brit 4 Via NKT 2, Papakura 3".
+    // The destination is the text after the last " To " and before " Via ".
+    if (!headsign) return '';
+    let s = headsign;
+    const toIdx = s.toLowerCase().lastIndexOf(' to ');
+    if (toIdx >= 0) s = s.slice(toIdx + 4);
+    const viaIdx = s.toLowerCase().indexOf(' via ');
+    if (viaIdx >= 0) s = s.slice(0, viaIdx);
+    return s.replace(/\s+\d+\s*$/, '').trim(); // drop trailing platform number
+  }
+
+  _stopCoreName(stopName) {
+    // Reduce "Pukekohe Train Station" -> "Pukekohe" for matching against a headsign.
+    if (!stopName) return '';
+    return stopName
+      .replace(/\b(train|bus|ferry|station|stop|terminal|interchange|wharf|platform|depot)\b/gi, '')
+      .replace(/\s+\d+\s*$/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   _formatDelay(seconds) {
@@ -480,6 +529,9 @@ class AucklandTransportCard extends HTMLElement {
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
 
+    if (this._config.show_direction) {
+      hr.appendChild(this._th(''));
+    }
     if (this._config.show_route) {
       hr.appendChild(this._th('Route'));
     }
@@ -507,6 +559,27 @@ class AucklandTransportCard extends HTMLElement {
       const tr = document.createElement('tr');
       tr.style.borderTop = '1px solid var(--divider-color)';
 
+      if (this._config.show_direction) {
+        const td = document.createElement('td');
+        td.style.padding = '8px';
+        td.style.textAlign = 'center';
+        td.style.width = '1%';
+        if (r.direction) {
+          const icon = document.createElement('ha-icon');
+          icon.setAttribute(
+            'icon',
+            r.direction === 'arriving' ? this._config.arriving_icon : this._config.departing_icon
+          );
+          icon.title = r.direction === 'arriving' ? 'Arriving' : 'Departing';
+          icon.style.setProperty('--mdc-icon-size', '20px');
+          icon.style.color =
+            r.direction === 'arriving'
+              ? (this._config.arriving_color || 'var(--success-color, #2e7d32)')
+              : (this._config.departing_color || 'var(--info-color, #2196f3)');
+          td.appendChild(icon);
+        }
+        tr.appendChild(td);
+      }
       if (this._config.show_route) {
         tr.appendChild(this._td(r.route || '—'));
       }
@@ -712,6 +785,14 @@ class AucklandTransportCardEditor extends HTMLElement {
       iconColorField.style.display = config.header_icon_show !== false ? 'block' : 'none';
     }
     
+    // Show/hide arrival/departure icon pickers based on show_direction switch
+    const showDirection = config.show_direction === true;
+    ['arriving-icon-field', 'departing-icon-field', 'arriving-color-field', 'departing-color-field']
+      .forEach((id) => {
+        const el = root.getElementById(id);
+        if (el) el.style.display = showDirection ? 'block' : 'none';
+      });
+
     // Show/hide map zoom based on show_map switch
     const mapZoomField = root.getElementById('map-zoom-field');
     if (mapZoomField) {
@@ -763,6 +844,8 @@ class AucklandTransportCardEditor extends HTMLElement {
       if (key === 'header_icon_size') el.value = config.header_icon_size || 28;
       if (key === 'header_icon_color') el.value = config.header_icon_color || '';
       if (key === 'filter') el.value = config.filter || '';
+      if (key === 'arriving_color') el.value = config.arriving_color || '';
+      if (key === 'departing_color') el.value = config.departing_color || '';
       if (key === 'map_zoom') el.value = config.map_zoom || 14;
       if (key === 'map_marker_name') el.value = config.map_marker_name || '';
     });
@@ -777,6 +860,7 @@ class AucklandTransportCardEditor extends HTMLElement {
       if (key === 'time_format_24h') el.checked = config.time_format !== '12';
       if (key === 'show_delay') el.checked = config.show_delay !== false;
       if (key === 'show_license_plate') el.checked = config.show_license_plate === true;
+      if (key === 'show_direction') el.checked = config.show_direction === true;
       if (key === 'show_map') el.checked = config.show_map === true;
       if (key === 'show_footer_api_break') el.checked = config.show_footer_api_break === true;
       if (key === 'show_footer_remaining') el.checked = config.show_footer_remaining === true;
@@ -792,7 +876,17 @@ class AucklandTransportCardEditor extends HTMLElement {
     if (mapMarkerIconPicker) {
       mapMarkerIconPicker.value = config.map_marker_icon || '';
     }
-    
+
+    const arrivingIconPicker = root.querySelector('ha-icon-picker[configValue="arriving_icon"]');
+    if (arrivingIconPicker) {
+      arrivingIconPicker.value = config.arriving_icon || 'mdi:location-enter';
+    }
+
+    const departingIconPicker = root.querySelector('ha-icon-picker[configValue="departing_icon"]');
+    if (departingIconPicker) {
+      departingIconPicker.value = config.departing_icon || 'mdi:location-exit';
+    }
+
     // Update map marker type select
     const mapMarkerTypeSelect = root.getElementById('map-marker-type-select');
     if (mapMarkerTypeSelect) {
@@ -921,8 +1015,34 @@ class AucklandTransportCardEditor extends HTMLElement {
           <ha-switch configValue="show_license_plate"></ha-switch>
           <span>Show License Plate</span>
           </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+          <ha-switch configValue="show_direction" id="show-direction-switch"></ha-switch>
+          <span>Show arrival/departure icon</span>
+          </div>
+          <ha-icon-picker
+            label="Arriving icon"
+            configValue="arriving_icon"
+            id="arriving-icon-field"
+          ></ha-icon-picker>
+          <ha-icon-picker
+            label="Departing icon"
+            configValue="departing_icon"
+            id="departing-icon-field"
+          ></ha-icon-picker>
+          <ha-input
+            label="Arriving icon color (optional)"
+            configValue="arriving_color"
+            placeholder="e.g. var(--success-color) or #2e7d32"
+            id="arriving-color-field"
+          ></ha-input>
+          <ha-input
+            label="Departing icon color (optional)"
+            configValue="departing_color"
+            placeholder="e.g. var(--info-color) or #2196f3"
+            id="departing-color-field"
+          ></ha-input>
         </div>
-        
+
         <div class="section">
           <div class="section-title">Time Format</div>
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -1035,7 +1155,17 @@ class AucklandTransportCardEditor extends HTMLElement {
         this._valueChanged(ev);
       });
     }
-    
+
+    ['arriving_icon', 'departing_icon'].forEach((key) => {
+      const picker = root.querySelector(`ha-icon-picker[configValue="${key}"]`);
+      if (picker) {
+        picker.addEventListener('value-changed', (ev) => {
+          ev.target.configValue = key;
+          this._valueChanged(ev);
+        });
+      }
+    });
+
     const mapMarkerTypeSelect = root.getElementById('map-marker-type-select');
     if (mapMarkerTypeSelect && !mapMarkerTypeSelect._listenerAdded) {
       mapMarkerTypeSelect.addEventListener('change', (ev) => {
