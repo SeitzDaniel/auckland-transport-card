@@ -6,7 +6,8 @@
 
 Please note this card will only work with the Auckland Transport Integration!
 
-<img width="812" height="357" alt="Screenshot 2025-11-05 110345" src="https://github.com/user-attachments/assets/dfe8910f-7fea-42c3-a5fe-c0b29b5c713c" />
+<img width="849" height="851" alt="image" src="https://github.com/user-attachments/assets/07980652-97b4-482b-a23a-b378ea116586" />
+
 
 
 ## Installation
