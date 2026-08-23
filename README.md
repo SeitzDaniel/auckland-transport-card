@@ -40,7 +40,6 @@ Please note this card will only work with the Auckland Transport Integration!
 
 All options for this card can be configured via the Lovelace UI editor.
 
-<img width="511" height="1325" alt="Screenshot 2025-11-05 110517" src="https://github.com/user-attachments/assets/0ae5186b-779a-44cf-be3f-fa1b04c7318e" />
 
 ## License
 
